@@ -1,0 +1,119 @@
+# Flare Lookup CLI
+
+A command-line tool to run **global search** lookups against the [Flare API](https://api.docs.flare.io/) and export events and credentials to JSON or CSV. Uses Flare’s token-based auth and follows pagination so large result sets are fully exported.
+
+**Not the official Flare CLI.** The official [flareio-cli](https://api.docs.flare.io/sdk/cli) focuses on exporting data for your tenant and identifiers. This tool calls the **global search** endpoints so you can run ad-hoc lookups (e.g. by domain, email, keyword) without configuring identifiers first. Global search counts against your [search quota](https://api.docs.flare.io/concepts/rate-limits-and-quotas).
+
+## Features
+
+- **Search credentials** by domain, email, keyword, secret, or auth domain
+- **Search events** by keyword, domain, email, query string, or username
+- **Export** to JSON, JSONL, or CSV (with pagination so all pages are fetched)
+- **Rate limiting** and 429 retry with backoff to stay within Flare limits
+- **Optional tenant** scope via `--tenant` for token generation
+
+## Requirements
+
+- Python 3.10+
+- A [Flare](https://flare.io) account and API key
+
+## Installation
+
+Clone the repo (or add it as a submodule), then install with [uv](https://docs.astral.sh/uv/) or pip:
+
+```bash
+cd flare-lookup-cli
+uv sync
+# or: pip install -e .
+```
+
+Run without installing (from the project directory):
+
+```bash
+uv run flare-lookup --help
+```
+
+## Configuration
+
+| Variable         | Description                         |
+|------------------|-------------------------------------|
+| `FLARE_API_KEY`  | Your Flare API key (required)       |
+
+Create an API key under [Flare Profile → API Keys](https://app.flare.io/#/profile). You can also pass `--api-key` on the command line instead of using the env var.
+
+## Usage
+
+### Search credentials
+
+Query the global credentials search and export results. Default page size is 10,000; pagination is automatic until there are no more results.
+
+```bash
+# By domain (default query type), export to CSV
+flare-lookup search-credentials --domain example.com --output creds.csv --format csv
+
+# By email
+flare-lookup search-credentials -q email -e user@example.com -o creds.json
+
+# By keyword (username part of identity)
+flare-lookup search-credentials -q keyword -k "admin" -o creds.jsonl --format jsonl
+
+# Optional: filter by imported date (ISO-8601)
+flare-lookup search-credentials -d example.com -o out.csv --format csv \
+  --imported-after 2024-01-01T00:00:00Z --imported-before 2024-12-31T23:59:59Z
+```
+
+**Query types:** `domain`, `email`, `keyword`, `secret`, `auth_domain`
+
+### Search events
+
+Query the global events search (paste, stealer_log, listing, etc.).
+
+```bash
+# By keyword
+flare-lookup search-events -q keyword -k "fraud" -o events.json
+
+# By domain
+flare-lookup search-events -q domain -d example.com -o events.csv --format csv
+
+# Filter by event type and time window
+flare-lookup search-events -q keyword -k "leak" --types paste,stealer_log \
+  --created-after 2024-01-01T00:00:00Z -o out.json
+```
+
+**Query types:** `keyword`, `domain`, `email`, `query_string`, `username`
+
+### Token (debug)
+
+Print a short-lived Bearer token:
+
+```bash
+flare-lookup token
+# Optional: flare-lookup token --tenant <tenant-id>
+```
+
+## Output formats
+
+- **json** – Single JSON array (default)
+- **jsonl** – Newline-delimited JSON, one object per line
+- **csv** – Flattened table (credentials: `imported_at`, `indicator_of_identity`, `domain`, `hash`, etc.; events: `uid`, `type`, `estimated_created_at`, …)
+
+If you omit `--output`, the first 20 results are printed to stdout as JSON.
+
+## Rate limits and pagination
+
+- Credentials and events search use Flare’s [paging](https://api.docs.flare.io/concepts/paging) (`from` / `next`). The CLI follows all pages until `next` is null.
+- A 1-second delay is applied between page requests to reduce 429s. On 429, the CLI retries with exponential backoff (1s, 2s, 4s) before failing.
+- When running many domains in a loop, consider adding a short delay between invocations (e.g. `sleep 2`) to stay under rate limits.
+
+## API reference
+
+- [Flare API – Getting started](https://api.docs.flare.io/introduction/getting-started)
+- [Authentication](https://api.docs.flare.io/concepts/authentication)
+- [Tokens – Generate](https://api.docs.flare.io/api-reference/tokens/endpoints/generate)
+- [Credentials global search](https://api.docs.flare.io/api-reference/v4/endpoints/credentials-global-search)
+- [Events global search](https://api.docs.flare.io/api-reference/v4/endpoints/global-search)
+- [Paging](https://api.docs.flare.io/concepts/paging)
+
+## License
+
+MIT.

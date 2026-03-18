@@ -1,0 +1,32 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / install
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env (do not commit API keys)
+.env
+.env.local
+
+# Output (optional; remove if you want to track exports)
+*_creds.csv
+*_creds.json
+*_creds.jsonl
