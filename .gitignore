@@ -3,6 +3,7 @@
 venv/
 env/
 *.lock
+*.csv
 
 # Build / install
 build/

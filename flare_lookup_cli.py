@@ -21,7 +21,7 @@ from typing import Any, Iterator
 import typer
 import requests
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 app = typer.Typer(
     name="flare-lookup",
@@ -29,11 +29,26 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+err_console = Console(stderr=True, highlight=False)
 
 BASE_URL = "https://api.flare.io"
 DEFAULT_EVENT_PAGE_SIZE = 10   # API max for events
 DEFAULT_CRED_PAGE_SIZE = 10_000
 MAX_CRED_PAGE_SIZE = 10_000
+
+VERBOSITY = 0  # set per-command from -v/--verbose count flag
+
+
+def set_verbosity(level: int) -> None:
+    """Set the module-level verbosity used by ``vlog``."""
+    global VERBOSITY
+    VERBOSITY = level
+
+
+def vlog(level: int, msg: str) -> None:
+    """Log ``msg`` to stderr if current verbosity is at least ``level``."""
+    if VERBOSITY >= level:
+        err_console.log(msg)
 
 
 def get_token(api_key: str, tenant: str | None = None) -> str:
@@ -41,12 +56,15 @@ def get_token(api_key: str, tenant: str | None = None) -> str:
     url = f"{BASE_URL}/tokens/generate"
     headers = {"Authorization": api_key}
     params = {} if not tenant else {"tenant": tenant}
+    vlog(1, f"POST /tokens/generate tenant={tenant!r}")
     r = requests.post(url, headers=headers, params=params, timeout=30)
+    vlog(1, f"  ← {r.status_code} {r.reason} ({len(r.content)} bytes)")
     r.raise_for_status()
     data = r.json()
     token = data.get("token")
     if not token:
         raise SystemExit("Token response missing 'token' field.")
+    vlog(2, f"token acquired: {token[:8]}… (len={len(token)})")
     return token
 
 
@@ -122,14 +140,24 @@ def search_events_page(
     if filters:
         payload["filters"] = filters
 
+    vlog(1, f"POST /firework/v4/events/global/_search from={from_!r} size={payload['size']}")
+    vlog(2, f"  payload={json.dumps(payload, default=str)[:500]}")
     for attempt in range(4):
         if attempt > 0:
-            time.sleep(2 ** attempt)
+            backoff = 2 ** attempt
+            vlog(1, f"  retry attempt {attempt + 1}/4 after {backoff}s backoff")
+            time.sleep(backoff)
         r = session.post(url, json=payload, timeout=60)
-        if r.status_code != 429:
-            r.raise_for_status()
-            data = r.json()
-            return data.get("items") or [], data.get("next")
+        if r.status_code == 429:
+            vlog(1, f"  ← 429 Too Many Requests (attempt {attempt + 1}/4)")
+            continue
+        vlog(1, f"  ← {r.status_code} {r.reason} ({len(r.content)} bytes)")
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("items") or []
+        next_cursor = data.get("next")
+        vlog(1, f"  ← {len(items)} items, next={'yes' if next_cursor else 'no'}")
+        return items, next_cursor
     r.raise_for_status()
     return [], None
 
@@ -144,13 +172,17 @@ def iter_events(
     estimated_created_at_gte: str | None = None,
     estimated_created_at_lte: str | None = None,
     max_pages: int | None = None,
-) -> Iterator[dict]:
-    """Yield all events from global search, following 'next' until no more or max_pages."""
+) -> Iterator[tuple[int, list[dict], str | None]]:
+    """Yield ``(page_index, items, next_cursor)`` tuples from events search.
+
+    Pagination follows ``next`` until exhausted or ``max_pages`` is reached.
+    """
     from_ = None
     page = 0
     while True:
         if max_pages is not None and page >= max_pages:
             break
+        page += 1
         items, next_cursor = search_events_page(
             session,
             query,
@@ -162,12 +194,11 @@ def iter_events(
             estimated_created_at_gte=estimated_created_at_gte,
             estimated_created_at_lte=estimated_created_at_lte,
         )
-        for item in items:
-            yield item
-        page += 1
+        yield page, items, next_cursor
         if not next_cursor:
             break
         from_ = next_cursor
+        vlog(2, "sleeping 1s between pages (rate limit)")
         time.sleep(1)  # rate limit: avoid 429 from Flare API
 
 
@@ -226,14 +257,24 @@ def search_credentials_page(
             }
         }
 
+    vlog(1, f"POST /firework/v4/credentials/global/_search from={from_!r} size={payload['size']}")
+    vlog(2, f"  payload={json.dumps(payload, default=str)[:500]}")
     for attempt in range(4):
         if attempt > 0:
-            time.sleep(2 ** attempt)  # 1, 2, 4 sec backoff
+            backoff = 2 ** attempt  # 2, 4, 8 sec backoff
+            vlog(1, f"  retry attempt {attempt + 1}/4 after {backoff}s backoff")
+            time.sleep(backoff)
         r = session.post(url, json=payload, timeout=60)
-        if r.status_code != 429:
-            r.raise_for_status()
-            data = r.json()
-            return data.get("items") or [], data.get("next")
+        if r.status_code == 429:
+            vlog(1, f"  ← 429 Too Many Requests (attempt {attempt + 1}/4)")
+            continue
+        vlog(1, f"  ← {r.status_code} {r.reason} ({len(r.content)} bytes)")
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("items") or []
+        next_cursor = data.get("next")
+        vlog(1, f"  ← {len(items)} items, next={'yes' if next_cursor else 'no'}")
+        return items, next_cursor
     r.raise_for_status()  # raise 429 after retries
     return [], None
 
@@ -246,13 +287,14 @@ def iter_credentials(
     imported_at_gte: str | None = None,
     imported_at_lte: str | None = None,
     max_pages: int | None = None,
-) -> Iterator[dict]:
-    """Yield all credentials from global search."""
+) -> Iterator[tuple[int, list[dict], str | None]]:
+    """Yield ``(page_index, items, next_cursor)`` tuples from credentials search."""
     from_ = None
     page = 0
     while True:
         if max_pages is not None and page >= max_pages:
             break
+        page += 1
         items, next_cursor = search_credentials_page(
             session,
             query,
@@ -262,12 +304,11 @@ def iter_credentials(
             imported_at_gte=imported_at_gte,
             imported_at_lte=imported_at_lte,
         )
-        for item in items:
-            yield item
-        page += 1
+        yield page, items, next_cursor
         if not next_cursor:
             break
         from_ = next_cursor
+        vlog(2, "sleeping 1s between pages (rate limit)")
         time.sleep(1)  # rate limit: avoid 429 from Flare API
 
 
@@ -364,8 +405,10 @@ def search_events(
     created_before: str | None = typer.Option(None, "--created-before", help="ISO-8601 timestamp (estimated_created_at lte)"),
     api_key: str | None = typer.Option(None, "--api-key", envvar="FLARE_API_KEY", help="Flare API key (or set FLARE_API_KEY)"),
     tenant: str | None = typer.Option(None, "--tenant", help="Tenant ID for token (optional)"),
+    verbose: int = typer.Option(0, "--verbose", "-v", count=True, help="Increase verbosity (-v request log, -vv payloads/token)"),
 ) -> None:
     """Search Flare events globally and optionally export to file."""
+    set_verbosity(verbose)
     if not api_key:
         console.print("[red]FLARE_API_KEY not set and --api-key not provided.[/red]")
         raise typer.Exit(1)
@@ -383,15 +426,19 @@ def search_events(
         parts = [p.strip() for p in severity.split(",")]
         severity_val = parts[0] if len(parts) == 1 else parts
 
+    vlog(1, f"events search query={query} filters types={types_list} severity={severity_val}")
     session = make_session(api_key, tenant)
     collected: list[dict] = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        TextColumn("• page {task.fields[page]} • {task.fields[items]} items"),
+        TimeElapsedColumn(),
         console=console,
+        transient=False,
     ) as progress:
-        task = progress.add_task("Searching events…", total=None)
-        for item in iter_events(
+        task = progress.add_task("Searching events…", total=None, page=0, items=0)
+        for page_idx, items, next_cursor in iter_events(
             session,
             query,
             size=size,
@@ -402,8 +449,12 @@ def search_events(
             estimated_created_at_lte=created_before,
             max_pages=max_pages,
         ):
-            collected.append(item)
-        progress.update(task_id=task, description=f"Found {len(collected)} events")
+            collected.extend(items)
+            progress.update(task_id=task, page=page_idx, items=len(collected))
+        progress.update(
+            task_id=task,
+            description=f"Found {len(collected)} events",
+        )
     console.print(f"[green]Total events: {len(collected)}[/green]")
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -414,6 +465,11 @@ def search_events(
             write_jsonl(output, collected)
         else:
             write_json(output, collected)
+        try:
+            size_bytes = output.stat().st_size
+        except OSError:
+            size_bytes = -1
+        vlog(1, f"wrote {output} format={fmt} bytes={size_bytes}")
         console.print(f"[green]Wrote [bold]{output}[/bold][/green]")
     else:
         # Print first 20 as JSON to stdout
@@ -445,8 +501,10 @@ def search_credentials(
     imported_before: str | None = typer.Option(None, "--imported-before", help="ISO-8601 (imported_at lte)"),
     api_key: str | None = typer.Option(None, "--api-key", envvar="FLARE_API_KEY", help="Flare API key (or set FLARE_API_KEY)"),
     tenant: str | None = typer.Option(None, "--tenant", help="Tenant ID for token (optional)"),
+    verbose: int = typer.Option(0, "--verbose", "-v", count=True, help="Increase verbosity (-v request log, -vv payloads/token)"),
 ) -> None:
     """Search Flare credentials globally and optionally export to file."""
+    set_verbosity(verbose)
     if not api_key:
         console.print("[red]FLARE_API_KEY not set and --api-key not provided.[/red]")
         raise typer.Exit(1)
@@ -458,15 +516,19 @@ def search_credentials(
         secret=secret,
         auth_domain=auth_domain,
     )
+    vlog(1, f"credentials search query={query} imported_at gte={imported_after} lte={imported_before}")
     session = make_session(api_key, tenant)
     collected: list[dict] = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        TextColumn("• page {task.fields[page]} • {task.fields[items]} items"),
+        TimeElapsedColumn(),
         console=console,
+        transient=False,
     ) as progress:
-        task = progress.add_task("Searching credentials…", total=None)
-        for item in iter_credentials(
+        task = progress.add_task("Searching credentials…", total=None, page=0, items=0)
+        for page_idx, items, next_cursor in iter_credentials(
             session,
             query,
             size=size,
@@ -475,8 +537,12 @@ def search_credentials(
             imported_at_lte=imported_before,
             max_pages=max_pages,
         ):
-            collected.append(item)
-        progress.update(task_id=task, description=f"Found {len(collected)} credentials")
+            collected.extend(items)
+            progress.update(task_id=task, page=page_idx, items=len(collected))
+        progress.update(
+            task_id=task,
+            description=f"Found {len(collected)} credentials",
+        )
     console.print(f"[green]Total credentials: {len(collected)}[/green]")
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -487,6 +553,11 @@ def search_credentials(
             write_jsonl(output, collected)
         else:
             write_json(output, collected)
+        try:
+            size_bytes = output.stat().st_size
+        except OSError:
+            size_bytes = -1
+        vlog(1, f"wrote {output} format={fmt} bytes={size_bytes}")
         console.print(f"[green]Wrote [bold]{output}[/bold][/green]")
     else:
         for item in collected[:20]:
