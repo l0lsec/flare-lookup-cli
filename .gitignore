@@ -4,6 +4,7 @@ venv/
 env/
 *.lock
 *.csv
+*.json
 
 # Build / install
 build/
