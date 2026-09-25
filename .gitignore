@@ -30,6 +30,7 @@ __pycache__/
 .env.local
 
 # Output (optional; remove if you want to track exports)
+results/
 *_creds.csv
 *_creds.json
 *_creds.jsonl

@@ -35,6 +35,7 @@ BASE_URL = "https://api.flare.io"
 DEFAULT_EVENT_PAGE_SIZE = 10   # API max for events
 DEFAULT_CRED_PAGE_SIZE = 10_000
 MAX_CRED_PAGE_SIZE = 10_000
+DEFAULT_OUTPUT_DIR = Path("results")  # gitignored
 
 VERBOSITY = 0  # set per-command from -v/--verbose count flag
 
@@ -382,6 +383,13 @@ def write_events_csv(path: Path, items: list[dict]) -> None:
 OUTPUT_FORMATS = ("json", "jsonl", "csv")
 
 
+def resolve_output(output: Path, output_dir: Path) -> Path:
+    """Place a bare filename under ``output_dir``; paths with a directory are used as given."""
+    if output.is_absolute() or output.parent != Path("."):
+        return output
+    return output_dir / output
+
+
 def export_results(
     output: Path,
     fmt: str,
@@ -430,7 +438,8 @@ def search_events(
     email: str | None = typer.Option(None, "--email", "-e", help="Email (for query_type=email)"),
     query_string: str | None = typer.Option(None, "--query-string", help="Lucene query (for query_type=query_string)"),
     username: str | None = typer.Option(None, "--username", "-u", help="Username (for query_type=username)"),
-    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file path"),
+    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir)"),
+    output_dir: Path = typer.Option(DEFAULT_OUTPUT_DIR, "--output-dir", path_type=Path, help="Directory for bare --output file names"),
     format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
     size: int = typer.Option(DEFAULT_EVENT_PAGE_SIZE, "--size", "-s", help="Page size (max 10 for events)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
@@ -493,6 +502,7 @@ def search_events(
         )
     console.print(f"[green]Total events: {len(collected)}[/green]")
     if output:
+        output = resolve_output(output, output_dir)
         fmt = format.lower() or (output.suffix.lstrip(".") if output.suffix else "json")
         for path in export_results(output, fmt, collected, write_events_csv):
             console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
@@ -517,7 +527,8 @@ def search_credentials(
     keyword: str | None = typer.Option(None, "--keyword", "-k", help="Keyword (username part of identity)"),
     secret: str | None = typer.Option(None, "--secret", help="Password/secret (for query_type=secret)"),
     auth_domain: str | None = typer.Option(None, "--auth-domain", help="Auth domain (for query_type=auth_domain)"),
-    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file path"),
+    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir)"),
+    output_dir: Path = typer.Option(DEFAULT_OUTPUT_DIR, "--output-dir", path_type=Path, help="Directory for bare --output file names"),
     format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
     size: int = typer.Option(DEFAULT_CRED_PAGE_SIZE, "--size", "-s", help="Page size (max 10000)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
@@ -570,6 +581,7 @@ def search_credentials(
         )
     console.print(f"[green]Total credentials: {len(collected)}[/green]")
     if output:
+        output = resolve_output(output, output_dir)
         fmt = format.lower() or (output.suffix.lstrip(".") if output.suffix else "json")
         for path in export_results(output, fmt, collected, write_credentials_csv):
             console.print(f"[green]Wrote [bold]{path}[/bold][/green]")

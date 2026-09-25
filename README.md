@@ -60,10 +60,10 @@ Create an API key under [Flare Profile → API Keys](https://app.flare.io/#/prof
 Query the global credentials search and export results. Default page size is 10,000; pagination is automatic until there are no more results.
 
 ```bash
-# By domain (default query type), export to CSV
+# By domain (default query type), export to CSV (saved as results/creds.csv)
 uv run flare-lookup search-credentials --domain example.com --output creds.csv --format csv
 
-# Export JSON, JSONL, and CSV in one run (creds.json, creds.jsonl, creds.csv)
+# Export JSON, JSONL, and CSV in one run (results/creds.json, .jsonl, .csv)
 uv run flare-lookup search-credentials -d example.com -o creds --format all
 
 # By email
@@ -103,7 +103,8 @@ Shared by `search-credentials` and `search-events`:
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output PATH` | File to write. Without it, the first 20 results are printed to the terminal as JSON. |
+| `-o, --output PATH` | File to write. A bare file name (e.g. `creds.csv`) is saved under `--output-dir`; a path with a directory (e.g. `/tmp/creds.csv`) is used as given. Without `--output`, the first 20 results are printed to the terminal as JSON. |
+| `--output-dir DIR` | Where bare `--output` file names are saved (default: `results/`, relative to the current directory). |
 | `-f, --format` | `json` (default), `jsonl`, `csv`, or `all`. The format is **not** inferred from the file extension, so pass `--format csv` when writing a `.csv` file. |
 | `-n, --max-pages N` | Stop after N pages (default: fetch all). |
 | `-s, --size N` | Results per page. Credentials: default and max 10,000. Events: default and max 10. |
@@ -134,7 +135,7 @@ uv run flare-lookup token
 - **csv** – Flattened table (credentials: `imported_at`, `indicator_of_identity`, `domain`, `hash`, `hash_type`, `source`, `source_id`, `id`; events: `uid`, `type`, `estimated_created_at`, `matched_at`, `severity`)
 - **all** – Writes every format above from a single search. The output path's extension is swapped per format (e.g. `-o results.json --format all` → `results.json`, `results.jsonl`, `results.csv`); a path with no known extension gets one appended.
 
-Exports are kept out of git: `.gitignore` excludes `*.csv`, `*.json`, and `*_creds.jsonl`.
+Exports are saved to `results/` by default (e.g. `-o creds.csv` → `results/creds.csv`), which is gitignored. `.gitignore` also excludes `*.csv`, `*.json`, and `*_creds.jsonl` anywhere in the repo.
 
 ## Rate limits and pagination
 
