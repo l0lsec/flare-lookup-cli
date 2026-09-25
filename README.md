@@ -8,7 +8,7 @@ A command-line tool to run **global search** lookups against the [Flare API](htt
 
 - **Search credentials** by domain, email, keyword, secret, or auth domain
 - **Search events** by keyword, domain, email, query string, or username
-- **Export** to JSON, JSONL, or CSV (with pagination so all pages are fetched)
+- **Export** to JSON, JSONL, CSV, or all three at once (with pagination so all pages are fetched)
 - **Rate limiting** and 429 retry with backoff to stay within Flare limits
 - **Optional tenant** scope via `--tenant` for token generation
 
@@ -57,6 +57,9 @@ flare-lookup search-credentials -q email -e user@example.com -o creds.json
 # By keyword (username part of identity)
 flare-lookup search-credentials -q keyword -k "admin" -o creds.jsonl --format jsonl
 
+# Export JSON, JSONL, and CSV in one run (creds.json, creds.jsonl, creds.csv)
+flare-lookup search-credentials -d example.com -o creds --format all
+
 # Optional: filter by imported date (ISO-8601)
 flare-lookup search-credentials -d example.com -o out.csv --format csv \
   --imported-after 2024-01-01T00:00:00Z --imported-before 2024-12-31T23:59:59Z
@@ -96,6 +99,7 @@ flare-lookup token
 - **json** – Single JSON array (default)
 - **jsonl** – Newline-delimited JSON, one object per line
 - **csv** – Flattened table (credentials: `imported_at`, `indicator_of_identity`, `domain`, `hash`, etc.; events: `uid`, `type`, `estimated_created_at`, …)
+- **all** – Writes every format above from a single search. The output path's extension is swapped per format (e.g. `-o results.json --format all` → `results.json`, `results.jsonl`, `results.csv`); a path with no known extension gets one appended.
 
 If you omit `--output`, the first 20 results are printed to stdout as JSON.
 

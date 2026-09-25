@@ -16,7 +16,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import typer
 import requests
@@ -379,6 +379,42 @@ def write_events_csv(path: Path, items: list[dict]) -> None:
         w.writerows(rows)
 
 
+OUTPUT_FORMATS = ("json", "jsonl", "csv")
+
+
+def export_results(
+    output: Path,
+    fmt: str,
+    items: list[dict],
+    csv_writer: Callable[[Path, list[dict]], None],
+) -> list[Path]:
+    """Write items to ``output`` in ``fmt``; ``all`` writes one file per format.
+
+    For ``all``, a known format suffix on ``output`` is replaced (``out.json`` →
+    ``out.json``, ``out.jsonl``, ``out.csv``); otherwise the suffix is appended.
+    Returns the paths written.
+    """
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "all":
+        base = output.with_suffix("") if output.suffix.lstrip(".").lower() in OUTPUT_FORMATS else output
+        targets = [(f, base.with_name(f"{base.name}.{f}")) for f in OUTPUT_FORMATS]
+    else:
+        targets = [(fmt, output)]
+    for f, path in targets:
+        if f == "csv":
+            csv_writer(path, items)
+        elif f == "jsonl":
+            write_jsonl(path, items)
+        else:
+            write_json(path, items)
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = -1
+        vlog(1, f"wrote {path} format={f} bytes={size_bytes}")
+    return [path for _, path in targets]
+
+
 # ---------- Commands ----------
 
 @app.command()
@@ -395,7 +431,7 @@ def search_events(
     query_string: str | None = typer.Option(None, "--query-string", help="Lucene query (for query_type=query_string)"),
     username: str | None = typer.Option(None, "--username", "-u", help="Username (for query_type=username)"),
     output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file path"),
-    format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv"),
+    format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
     size: int = typer.Option(DEFAULT_EVENT_PAGE_SIZE, "--size", "-s", help="Page size (max 10 for events)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
     order: str = typer.Option("desc", "--order", help="Order: asc or desc"),
@@ -457,20 +493,9 @@ def search_events(
         )
     console.print(f"[green]Total events: {len(collected)}[/green]")
     if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
         fmt = format.lower() or (output.suffix.lstrip(".") if output.suffix else "json")
-        if fmt == "csv":
-            write_events_csv(output, collected)
-        elif fmt == "jsonl":
-            write_jsonl(output, collected)
-        else:
-            write_json(output, collected)
-        try:
-            size_bytes = output.stat().st_size
-        except OSError:
-            size_bytes = -1
-        vlog(1, f"wrote {output} format={fmt} bytes={size_bytes}")
-        console.print(f"[green]Wrote [bold]{output}[/bold][/green]")
+        for path in export_results(output, fmt, collected, write_events_csv):
+            console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
     else:
         # Print first 20 as JSON to stdout
         for item in collected[:20]:
@@ -493,7 +518,7 @@ def search_credentials(
     secret: str | None = typer.Option(None, "--secret", help="Password/secret (for query_type=secret)"),
     auth_domain: str | None = typer.Option(None, "--auth-domain", help="Auth domain (for query_type=auth_domain)"),
     output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file path"),
-    format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv"),
+    format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
     size: int = typer.Option(DEFAULT_CRED_PAGE_SIZE, "--size", "-s", help="Page size (max 10000)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
     order: str = typer.Option("desc", "--order", help="Order: asc or desc"),
@@ -545,20 +570,9 @@ def search_credentials(
         )
     console.print(f"[green]Total credentials: {len(collected)}[/green]")
     if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
         fmt = format.lower() or (output.suffix.lstrip(".") if output.suffix else "json")
-        if fmt == "csv":
-            write_credentials_csv(output, collected)
-        elif fmt == "jsonl":
-            write_jsonl(output, collected)
-        else:
-            write_json(output, collected)
-        try:
-            size_bytes = output.stat().st_size
-        except OSError:
-            size_bytes = -1
-        vlog(1, f"wrote {output} format={fmt} bytes={size_bytes}")
-        console.print(f"[green]Wrote [bold]{output}[/bold][/green]")
+        for path in export_results(output, fmt, collected, write_credentials_csv):
+            console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
     else:
         for item in collected[:20]:
             console.print_json(data=item)
