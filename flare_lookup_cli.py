@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -383,6 +384,20 @@ def write_events_csv(path: Path, items: list[dict]) -> None:
 OUTPUT_FORMATS = ("json", "jsonl", "csv")
 
 
+def default_output_name(query: dict[str, Any], kind: str, fmt: str) -> Path:
+    """Name the export after the searched value, e.g. ``example.com_credentials.json``.
+
+    Secrets are never put in file names; ``fmt=all`` gets no suffix (export_results adds them).
+    """
+    if query["type"] == "secret":
+        value = "secret"
+    else:
+        value = next(v for k, v in query.items() if k != "type")
+    stem = re.sub(r"[^A-Za-z0-9._@-]+", "_", value).strip("._")[:100] or query["type"]
+    name = f"{stem}_{kind}"
+    return Path(name if fmt == "all" else f"{name}.{fmt}")
+
+
 def resolve_output(output: Path, output_dir: Path) -> Path:
     """Place a bare filename under ``output_dir``; paths with a directory are used as given."""
     if output.is_absolute() or output.parent != Path("."):
@@ -438,8 +453,9 @@ def search_events(
     email: str | None = typer.Option(None, "--email", "-e", help="Email (for query_type=email)"),
     query_string: str | None = typer.Option(None, "--query-string", help="Lucene query (for query_type=query_string)"),
     username: str | None = typer.Option(None, "--username", "-u", help="Username (for query_type=username)"),
-    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir)"),
+    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir; default: named after the search value)"),
     output_dir: Path = typer.Option(DEFAULT_OUTPUT_DIR, "--output-dir", path_type=Path, help="Directory for bare --output file names"),
+    print_only: bool = typer.Option(False, "--print", help="Print the first 20 results to the terminal instead of saving"),
     format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
     size: int = typer.Option(DEFAULT_EVENT_PAGE_SIZE, "--size", "-s", help="Page size (max 10 for events)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
@@ -501,17 +517,16 @@ def search_events(
             description=f"Found {len(collected)} events",
         )
     console.print(f"[green]Total events: {len(collected)}[/green]")
-    if output:
-        output = resolve_output(output, output_dir)
-        fmt = format.lower() or (output.suffix.lstrip(".") if output.suffix else "json")
-        for path in export_results(output, fmt, collected, write_events_csv):
-            console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
-    else:
-        # Print first 20 as JSON to stdout
+    if print_only:
         for item in collected[:20]:
             console.print_json(data=item)
         if len(collected) > 20:
-            console.print(f"... and {len(collected) - 20} more (use --output to export all)")
+            console.print(f"... and {len(collected) - 20} more (drop --print to export all)")
+    else:
+        fmt = format.lower()
+        output = resolve_output(output or default_output_name(query, "events", fmt), output_dir)
+        for path in export_results(output, fmt, collected, write_events_csv):
+            console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
 
 
 @app.command()
@@ -527,8 +542,9 @@ def search_credentials(
     keyword: str | None = typer.Option(None, "--keyword", "-k", help="Keyword (username part of identity)"),
     secret: str | None = typer.Option(None, "--secret", help="Password/secret (for query_type=secret)"),
     auth_domain: str | None = typer.Option(None, "--auth-domain", help="Auth domain (for query_type=auth_domain)"),
-    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir)"),
+    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir; default: named after the search value)"),
     output_dir: Path = typer.Option(DEFAULT_OUTPUT_DIR, "--output-dir", path_type=Path, help="Directory for bare --output file names"),
+    print_only: bool = typer.Option(False, "--print", help="Print the first 20 results to the terminal instead of saving"),
     format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
     size: int = typer.Option(DEFAULT_CRED_PAGE_SIZE, "--size", "-s", help="Page size (max 10000)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
@@ -580,16 +596,16 @@ def search_credentials(
             description=f"Found {len(collected)} credentials",
         )
     console.print(f"[green]Total credentials: {len(collected)}[/green]")
-    if output:
-        output = resolve_output(output, output_dir)
-        fmt = format.lower() or (output.suffix.lstrip(".") if output.suffix else "json")
-        for path in export_results(output, fmt, collected, write_credentials_csv):
-            console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
-    else:
+    if print_only:
         for item in collected[:20]:
             console.print_json(data=item)
         if len(collected) > 20:
-            console.print(f"... and {len(collected) - 20} more (use --output to export all)")
+            console.print(f"... and {len(collected) - 20} more (drop --print to export all)")
+    else:
+        fmt = format.lower()
+        output = resolve_output(output or default_output_name(query, "credentials", fmt), output_dir)
+        for path in export_results(output, fmt, collected, write_credentials_csv):
+            console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
 
 
 @app.command()

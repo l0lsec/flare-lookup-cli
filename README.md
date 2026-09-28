@@ -60,11 +60,14 @@ Create an API key under [Flare Profile → API Keys](https://app.flare.io/#/prof
 Query the global credentials search and export results. Default page size is 10,000; pagination is automatic until there are no more results.
 
 ```bash
-# By domain (default query type), export to CSV (saved as results/creds.csv)
-uv run flare-lookup search-credentials --domain example.com --output creds.csv --format csv
+# By domain (default query type); saved as results/example.com_credentials.json
+uv run flare-lookup search-credentials --domain example.com
 
-# Export JSON, JSONL, and CSV in one run (results/creds.json, .jsonl, .csv)
-uv run flare-lookup search-credentials -d example.com -o creds --format all
+# Export JSON, JSONL, and CSV in one run (results/example.com_credentials.json, .jsonl, .csv)
+uv run flare-lookup search-credentials -d example.com --format all
+
+# Pick your own file name (saved as results/creds.csv)
+uv run flare-lookup search-credentials -d example.com -o creds.csv --format csv
 
 # By email
 uv run flare-lookup search-credentials -q email -e user@example.com -o creds.json
@@ -103,8 +106,9 @@ Shared by `search-credentials` and `search-events`:
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output PATH` | File to write. A bare file name (e.g. `creds.csv`) is saved under `--output-dir`; a path with a directory (e.g. `/tmp/creds.csv`) is used as given. Without `--output`, the first 20 results are printed to the terminal as JSON. |
-| `--output-dir DIR` | Where bare `--output` file names are saved (default: `results/`, relative to the current directory). |
+| `-o, --output PATH` | File to write. A bare file name (e.g. `creds.csv`) is saved under `--output-dir`; a path with a directory (e.g. `/tmp/creds.csv`) is used as given. Without `--output`, the file is named after the search value and command, e.g. `example.com_credentials.csv` or `user@example.com_events.json` (`--secret` searches are saved as `secret_credentials.*` so the secret never ends up in a file name). |
+| `--output-dir DIR` | Where bare `--output` file names and auto-named files are saved (default: `results/`, relative to the current directory). |
+| `--print` | Print the first 20 results to the terminal as JSON instead of saving a file. |
 | `-f, --format` | `json` (default), `jsonl`, `csv`, or `all`. The format is **not** inferred from the file extension, so pass `--format csv` when writing a `.csv` file. |
 | `-n, --max-pages N` | Stop after N pages (default: fetch all). |
 | `-s, --size N` | Results per page. Credentials: default and max 10,000. Events: default and max 10. |
@@ -135,7 +139,7 @@ uv run flare-lookup token
 - **csv** – Flattened table (credentials: `imported_at`, `indicator_of_identity`, `domain`, `hash`, `hash_type`, `source`, `source_id`, `id`; events: `uid`, `type`, `estimated_created_at`, `matched_at`, `severity`)
 - **all** – Writes every format above from a single search. The output path's extension is swapped per format (e.g. `-o results.json --format all` → `results.json`, `results.jsonl`, `results.csv`); a path with no known extension gets one appended.
 
-Exports are saved to `results/` by default (e.g. `-o creds.csv` → `results/creds.csv`), which is gitignored. `.gitignore` also excludes `*.csv`, `*.json`, and `*_creds.jsonl` anywhere in the repo.
+Exports are saved to `results/` by default (e.g. `-d example.com` → `results/example.com_credentials.json`, `-o creds.csv` → `results/creds.csv`), which is gitignored. `.gitignore` also excludes `*.csv`, `*.json`, and `*_creds.jsonl` anywhere in the repo.
 
 ## Rate limits and pagination
 
