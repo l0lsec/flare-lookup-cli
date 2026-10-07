@@ -358,6 +358,55 @@ def write_credentials_csv(path: Path, items: list[dict]) -> None:
         w.writerows(rows)
 
 
+def credential_userpass_lines(items: list[dict], include_domain: bool) -> list[str]:
+    """Build deduplicated ``user:pass`` lines from credential records.
+
+    ``pass`` is the ``hash`` field (cleartext for stealer-log/combolist sources,
+    otherwise the stored hash — tools split on the first colon, so either works).
+    ``include_domain`` controls the username form:
+
+    * ``False`` -> bare local part (``jdoe:pass``); any ``@domain`` is stripped.
+    * ``True``  -> ``user@domain:pass``; uses the identity's own ``@domain`` when
+      present, else joins the local part with the record's ``domain``.
+
+    Records without a usable username or secret (and, for the domain variant,
+    without any domain) are skipped. Order is preserved; duplicates are dropped.
+    """
+    seen: set[str] = set()
+    lines: list[str] = []
+    for c in items:
+        secret = (c.get("hash") or "").strip()
+        identity = (c.get("identity_name") or "").strip()
+        if not secret or not identity:
+            continue
+        local = identity.split("@", 1)[0].strip()
+        if not local:
+            continue
+        if include_domain:
+            if "@" in identity:
+                user = identity
+            else:
+                domain = (c.get("domain") or "").strip()
+                if not domain:
+                    continue
+                user = f"{local}@{domain}"
+        else:
+            user = local
+        line = f"{user}:{secret}"
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines
+
+
+def write_credentials_userpass(path: Path, items: list[dict], include_domain: bool = False) -> None:
+    """Write one ``user:pass`` per line (trailing newline; empty file if no usable rows)."""
+    lines = credential_userpass_lines(items, include_domain=include_domain)
+    with open(path, "w", encoding="utf-8") as f:
+        if lines:
+            f.write("\n".join(lines) + "\n")
+
+
 def write_events_csv(path: Path, items: list[dict]) -> None:
     """Write events to CSV with flattened metadata/highlights."""
     if not items:
@@ -382,12 +431,23 @@ def write_events_csv(path: Path, items: list[dict]) -> None:
 
 
 OUTPUT_FORMATS = ("json", "jsonl", "csv")
+EVENT_OUTPUT_FORMATS = OUTPUT_FORMATS + ("all",)
+CREDENTIAL_OUTPUT_FORMATS = OUTPUT_FORMATS + ("all", "userpass")
+# fmt values that expand to more than one file (export_results derives a base name)
+MULTI_FILE_FORMATS = ("all", "userpass")
+_STRIPPABLE_SUFFIXES = set(OUTPUT_FORMATS) | {"txt", "userpass"}
+
+
+def _strip_known_suffix(path: Path) -> Path:
+    """Drop a trailing format/txt suffix so a multi-file format can append its own."""
+    return path.with_suffix("") if path.suffix.lstrip(".").lower() in _STRIPPABLE_SUFFIXES else path
 
 
 def default_output_name(query: dict[str, Any], kind: str, fmt: str) -> Path:
     """Name the export after the searched value, e.g. ``example.com_credentials.json``.
 
-    Secrets are never put in file names; ``fmt=all`` gets no suffix (export_results adds them).
+    Secrets are never put in file names; multi-file formats (``all``, ``userpass``)
+    get no suffix (export_results adds the per-file suffixes).
     """
     if query["type"] == "secret":
         value = "secret"
@@ -395,7 +455,7 @@ def default_output_name(query: dict[str, Any], kind: str, fmt: str) -> Path:
         value = next(v for k, v in query.items() if k != "type")
     stem = re.sub(r"[^A-Za-z0-9._@-]+", "_", value).strip("._")[:100] or query["type"]
     name = f"{stem}_{kind}"
-    return Path(name if fmt == "all" else f"{name}.{fmt}")
+    return Path(name if fmt in MULTI_FILE_FORMATS else f"{name}.{fmt}")
 
 
 def resolve_output(output: Path, output_dir: Path) -> Path:
@@ -405,22 +465,39 @@ def resolve_output(output: Path, output_dir: Path) -> Path:
     return output_dir / output
 
 
+def _userpass_targets(output: Path) -> list[tuple[str, Path]]:
+    """The two combolist targets derived from a base output path."""
+    base = _strip_known_suffix(output)
+    return [
+        ("userpass", base.with_name(f"{base.name}_userpass.txt")),
+        ("userpass-domain", base.with_name(f"{base.name}_userpass_domain.txt")),
+    ]
+
+
 def export_results(
     output: Path,
     fmt: str,
     items: list[dict],
     csv_writer: Callable[[Path, list[dict]], None],
+    userpass: bool = False,
 ) -> list[Path]:
-    """Write items to ``output`` in ``fmt``; ``all`` writes one file per format.
+    """Write items to ``output`` in ``fmt``; ``all`` and ``userpass`` write several files.
 
     For ``all``, a known format suffix on ``output`` is replaced (``out.json`` →
     ``out.json``, ``out.jsonl``, ``out.csv``); otherwise the suffix is appended.
+    ``userpass`` writes two combolist files from a base name: ``<base>_userpass.txt``
+    (bare ``user:pass``) and ``<base>_userpass_domain.txt`` (``user@domain:pass``).
+    When ``userpass`` is true, ``all`` also emits those two files (credentials only).
     Returns the paths written.
     """
     output.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "all":
-        base = output.with_suffix("") if output.suffix.lstrip(".").lower() in OUTPUT_FORMATS else output
+        base = _strip_known_suffix(output)
         targets = [(f, base.with_name(f"{base.name}.{f}")) for f in OUTPUT_FORMATS]
+        if userpass:
+            targets += _userpass_targets(output)
+    elif fmt == "userpass":
+        targets = _userpass_targets(output)
     else:
         targets = [(fmt, output)]
     for f, path in targets:
@@ -428,6 +505,10 @@ def export_results(
             csv_writer(path, items)
         elif f == "jsonl":
             write_jsonl(path, items)
+        elif f == "userpass":
+            write_credentials_userpass(path, items, include_domain=False)
+        elif f == "userpass-domain":
+            write_credentials_userpass(path, items, include_domain=True)
         else:
             write_json(path, items)
         try:
@@ -470,6 +551,12 @@ def search_events(
 ) -> None:
     """Search Flare events globally and optionally export to file."""
     set_verbosity(verbose)
+    fmt = format.lower()
+    if fmt not in EVENT_OUTPUT_FORMATS:
+        console.print(
+            f"[red]Unknown --format '{format}'. Choose one of: {', '.join(EVENT_OUTPUT_FORMATS)}.[/red]"
+        )
+        raise typer.Exit(1)
     if not api_key:
         console.print("[red]FLARE_API_KEY not set and --api-key not provided.[/red]")
         raise typer.Exit(1)
@@ -523,7 +610,6 @@ def search_events(
         if len(collected) > 20:
             console.print(f"... and {len(collected) - 20} more (drop --print to export all)")
     else:
-        fmt = format.lower()
         output = resolve_output(output or default_output_name(query, "events", fmt), output_dir)
         for path in export_results(output, fmt, collected, write_events_csv):
             console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
@@ -545,7 +631,7 @@ def search_credentials(
     output: Path | None = typer.Option(None, "--output", "-o", path_type=Path, help="Output file name (bare names go in --output-dir; default: named after the search value)"),
     output_dir: Path = typer.Option(DEFAULT_OUTPUT_DIR, "--output-dir", path_type=Path, help="Directory for bare --output file names"),
     print_only: bool = typer.Option(False, "--print", help="Print the first 20 results to the terminal instead of saving"),
-    format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, or all (writes one file per format)"),
+    format: str = typer.Option("json", "--format", "-f", help="Output format: json, jsonl, csv, all (every format incl. the two user:pass combolists), or userpass (just the combolists)"),
     size: int = typer.Option(DEFAULT_CRED_PAGE_SIZE, "--size", "-s", help="Page size (max 10000)"),
     max_pages: int | None = typer.Option(None, "--max-pages", "-n", help="Stop after N pages (default: all)"),
     order: str = typer.Option("desc", "--order", help="Order: asc or desc"),
@@ -557,6 +643,12 @@ def search_credentials(
 ) -> None:
     """Search Flare credentials globally and optionally export to file."""
     set_verbosity(verbose)
+    fmt = format.lower()
+    if fmt not in CREDENTIAL_OUTPUT_FORMATS:
+        console.print(
+            f"[red]Unknown --format '{format}'. Choose one of: {', '.join(CREDENTIAL_OUTPUT_FORMATS)}.[/red]"
+        )
+        raise typer.Exit(1)
     if not api_key:
         console.print("[red]FLARE_API_KEY not set and --api-key not provided.[/red]")
         raise typer.Exit(1)
@@ -602,9 +694,8 @@ def search_credentials(
         if len(collected) > 20:
             console.print(f"... and {len(collected) - 20} more (drop --print to export all)")
     else:
-        fmt = format.lower()
         output = resolve_output(output or default_output_name(query, "credentials", fmt), output_dir)
-        for path in export_results(output, fmt, collected, write_credentials_csv):
+        for path in export_results(output, fmt, collected, write_credentials_csv, userpass=True):
             console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
 
 

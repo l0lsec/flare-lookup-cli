@@ -8,7 +8,7 @@ A command-line tool to run **global search** lookups against the [Flare API](htt
 
 - **Search credentials** by domain, email, keyword, secret, or auth domain
 - **Search events** by keyword, domain, email, query string, or username
-- **Export** to JSON, JSONL, CSV, or all three at once (with pagination so all pages are fetched)
+- **Export** to JSON, JSONL, CSV, all three at once, or `user:pass` combolists (with pagination so all pages are fetched)
 - **Rate limiting** and 429 retry with backoff to stay within Flare limits
 - **Verbose logging** (`-v` / `-vv`) of API requests to stderr for debugging
 - **Optional tenant** scope via `--tenant` for token generation
@@ -63,8 +63,14 @@ Query the global credentials search and export results. Default page size is 10,
 # By domain (default query type); saved as results/example.com_credentials.json
 uv run flare-lookup search-credentials --domain example.com
 
-# Export JSON, JSONL, and CSV in one run (results/example.com_credentials.json, .jsonl, .csv)
+# Export every format in one run: JSON, JSONL, CSV, and the two user:pass
+# combolists (results/example.com_credentials.json, .jsonl, .csv,
+# _userpass.txt, _userpass_domain.txt)
 uv run flare-lookup search-credentials -d example.com --format all
+
+# Just the two user:pass combolists for remediation / exposure testing
+# (results/example.com_credentials_userpass.txt and _userpass_domain.txt)
+uv run flare-lookup search-credentials -d example.com --format userpass
 
 # Pick your own file name (saved as results/creds.csv)
 uv run flare-lookup search-credentials -d example.com -o creds.csv --format csv
@@ -109,7 +115,7 @@ Shared by `search-credentials` and `search-events`:
 | `-o, --output PATH` | File to write. A bare file name (e.g. `creds.csv`) is saved under `--output-dir`; a path with a directory (e.g. `/tmp/creds.csv`) is used as given. Without `--output`, the file is named after the search value and command, e.g. `example.com_credentials.csv` or `user@example.com_events.json` (`--secret` searches are saved as `secret_credentials.*` so the secret never ends up in a file name). |
 | `--output-dir DIR` | Where bare `--output` file names and auto-named files are saved (default: `results/`, relative to the current directory). |
 | `--print` | Print the first 20 results to the terminal as JSON instead of saving a file. |
-| `-f, --format` | `json` (default), `jsonl`, `csv`, or `all`. The format is **not** inferred from the file extension, so pass `--format csv` when writing a `.csv` file. |
+| `-f, --format` | `json` (default), `jsonl`, `csv`, or `all`. For `search-credentials`, `all` additionally writes the two `user:pass` combolists, and `userpass` writes just those two. The format is **not** inferred from the file extension, so pass `--format csv` when writing a `.csv` file. |
 | `-n, --max-pages N` | Stop after N pages (default: fetch all). |
 | `-s, --size N` | Results per page. Credentials: default and max 10,000. Events: default and max 10. |
 | `--order` | `desc` (default) or `asc`. |
@@ -137,9 +143,14 @@ uv run flare-lookup token
 - **json** – Single JSON array (default)
 - **jsonl** – Newline-delimited JSON, one object per line
 - **csv** – Flattened table (credentials: `imported_at`, `indicator_of_identity`, `domain`, `hash`, `hash_type`, `source`, `source_id`, `id`; events: `uid`, `type`, `estimated_created_at`, `matched_at`, `severity`)
-- **all** – Writes every format above from a single search. The output path's extension is swapped per format (e.g. `-o results.json --format all` → `results.json`, `results.jsonl`, `results.csv`); a path with no known extension gets one appended.
+- **all** – Writes every format above from a single search. The output path's extension is swapped per format (e.g. `-o results.json --format all` → `results.json`, `results.jsonl`, `results.csv`); a path with no known extension gets one appended. For `search-credentials`, `all` **also** writes the two `userpass` combolists below (`<base>_userpass.txt` and `<base>_userpass_domain.txt`), so a normal `--format all` run generates them automatically alongside the data files.
+- **userpass** (`search-credentials` only) – Writes two `user:pass` combolists from a single search, one credential per line, deduplicated:
+  - `<base>_userpass.txt` – bare username, e.g. `jdoe:<secret>` (any `@domain` is stripped)
+  - `<base>_userpass_domain.txt` – username with domain, e.g. `jdoe@example.com:<secret>`
 
-Exports are saved to `results/` by default (e.g. `-d example.com` → `results/example.com_credentials.json`, `-o creds.csv` → `results/creds.csv`), which is gitignored. `.gitignore` also excludes `*.csv`, `*.json`, and `*_creds.jsonl` anywhere in the repo.
+  The secret is the credential's `hash` field (cleartext for stealer-log/combolist sources; otherwise the stored hash — downstream tools split on the first colon). Records with no username or no secret are skipped, as are domain-variant lines when neither the identity nor the record carries a domain. This is the format expected by credential-exposure checkers and password-reset tooling; use it only against identities you are authorized to remediate.
+
+Exports are saved to `results/` by default (e.g. `-d example.com` → `results/example.com_credentials.json`, `-o creds.csv` → `results/creds.csv`), which is gitignored. `.gitignore` also excludes `*.csv`, `*.json`, `*_creds.jsonl`, and the `*_userpass.txt` / `*_userpass_domain.txt` combolists anywhere in the repo.
 
 ## Rate limits and pagination
 

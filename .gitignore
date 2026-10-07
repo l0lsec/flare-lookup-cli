@@ -34,3 +34,7 @@ results/
 *_creds.csv
 *_creds.json
 *_creds.jsonl
+
+# user:pass combolists (contain secrets — never commit)
+*_userpass.txt
+*_userpass_domain.txt
