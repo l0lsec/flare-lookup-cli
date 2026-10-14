@@ -81,10 +81,15 @@ uv run flare-lookup search-credentials -q email -e user@example.com -o creds.jso
 # By keyword (username part of identity)
 uv run flare-lookup search-credentials -q keyword -k "admin" -o creds.jsonl --format jsonl
 
+# Only credentials imported in the last 2 years (keeps large domains within the search quota)
+uv run flare-lookup search-credentials -d example.com --years 2
+
 # Filter by imported date (ISO-8601)
 uv run flare-lookup search-credentials -d example.com -o out.csv --format csv \
   --imported-after 2024-01-01T00:00:00Z --imported-before 2024-12-31T23:59:59Z
 ```
+
+Global search quota is counted per 100 results returned, not per request, so a domain with tens of thousands of credentials can use up the quota in one run. Use `--years` (or `--imported-after`) and `--max-pages` to limit how much is pulled.
 
 **Query types:** `domain`, `email`, `keyword`, `secret`, `auth_domain`
 
@@ -123,9 +128,9 @@ Shared by `search-credentials` and `search-events`:
 | `--tenant ID` | Tenant ID to scope the generated token. |
 | `-v, --verbose` | `-v` logs each API request and response status to stderr; `-vv` also logs request payloads and a truncated token. |
 
-Filters for `search-credentials`: `--imported-after`, `--imported-before` (ISO-8601).
+Filters for `search-credentials`: `--imported-after`, `--imported-before` (ISO-8601), `--years N` (only credentials imported in the last N years; sets `--imported-after` for you, so the two can't be combined).
 
-Filters for `search-events`: `--types` (comma-separated event types), `--severity` (a minimum severity, or a comma list of `info`, `low`, `medium`, `high`, `critical`), `--created-after`, `--created-before` (ISO-8601).
+Filters for `search-events`: `--types` (comma-separated event types), `--severity` (a minimum severity, or a comma list of `info`, `low`, `medium`, `high`, `critical`), `--created-after`, `--created-before` (ISO-8601), `--years N` (only events from the last N years; sets `--created-after`, so the two can't be combined).
 
 Run `uv run flare-lookup <command> --help` for the full list.
 

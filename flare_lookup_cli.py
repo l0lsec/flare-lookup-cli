@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -519,6 +520,30 @@ def export_results(
     return [path for _, path in targets]
 
 
+# ---------- Date filters ----------
+
+def years_ago(years: int, now: datetime | None = None) -> str:
+    """ISO-8601 UTC timestamp ``years`` calendar years before ``now`` (Feb 29 → Feb 28)."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        then = now.replace(year=now.year - years)
+    except ValueError:  # Feb 29 in a non-leap target year
+        then = now.replace(year=now.year - years, day=28)
+    return then.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def resolve_since(after: str | None, years: int | None, after_flag: str) -> str | None:
+    """Return the lower date bound from ``--years`` or the explicit ``after_flag`` value."""
+    if years is None:
+        return after
+    if after is not None:
+        console.print(f"[red]Use either --years or {after_flag}, not both.[/red]")
+        raise typer.Exit(1)
+    since = years_ago(years)
+    console.print(f"Limiting to the last {years} year{'s' if years != 1 else ''} (since {since})")
+    return since
+
+
 # ---------- Commands ----------
 
 @app.command()
@@ -545,6 +570,7 @@ def search_events(
     severity: str | None = typer.Option(None, "--severity", help="Min severity or comma list: info,low,medium,high,critical"),
     created_after: str | None = typer.Option(None, "--created-after", help="ISO-8601 timestamp (estimated_created_at gte)"),
     created_before: str | None = typer.Option(None, "--created-before", help="ISO-8601 timestamp (estimated_created_at lte)"),
+    years: int | None = typer.Option(None, "--years", min=1, help="Only events from the last N years (sets --created-after; can't combine with it)"),
     api_key: str | None = typer.Option(None, "--api-key", envvar="FLARE_API_KEY", help="Flare API key (or set FLARE_API_KEY)"),
     tenant: str | None = typer.Option(None, "--tenant", help="Tenant ID for token (optional)"),
     verbose: int = typer.Option(0, "--verbose", "-v", count=True, help="Increase verbosity (-v request log, -vv payloads/token)"),
@@ -573,6 +599,7 @@ def search_events(
     if severity:
         parts = [p.strip() for p in severity.split(",")]
         severity_val = parts[0] if len(parts) == 1 else parts
+    created_after = resolve_since(created_after, years, "--created-after")
 
     vlog(1, f"events search query={query} filters types={types_list} severity={severity_val}")
     session = make_session(api_key, tenant)
@@ -637,6 +664,7 @@ def search_credentials(
     order: str = typer.Option("desc", "--order", help="Order: asc or desc"),
     imported_after: str | None = typer.Option(None, "--imported-after", help="ISO-8601 (imported_at gte)"),
     imported_before: str | None = typer.Option(None, "--imported-before", help="ISO-8601 (imported_at lte)"),
+    years: int | None = typer.Option(None, "--years", min=1, help="Only credentials imported in the last N years (sets --imported-after; can't combine with it)"),
     api_key: str | None = typer.Option(None, "--api-key", envvar="FLARE_API_KEY", help="Flare API key (or set FLARE_API_KEY)"),
     tenant: str | None = typer.Option(None, "--tenant", help="Tenant ID for token (optional)"),
     verbose: int = typer.Option(0, "--verbose", "-v", count=True, help="Increase verbosity (-v request log, -vv payloads/token)"),
@@ -660,6 +688,7 @@ def search_credentials(
         secret=secret,
         auth_domain=auth_domain,
     )
+    imported_after = resolve_since(imported_after, years, "--imported-after")
     vlog(1, f"credentials search query={query} imported_at gte={imported_after} lte={imported_before}")
     session = make_session(api_key, tenant)
     collected: list[dict] = []
