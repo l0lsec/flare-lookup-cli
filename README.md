@@ -9,6 +9,7 @@ A command-line tool to run **global search** lookups against the [Flare API](htt
 - **Search credentials** by domain, email, keyword, secret, or auth domain
 - **Search events** by keyword, domain, email, query string, or username
 - **Export** to JSON, JSONL, CSV, all three at once, or `user:pass` combolists (with pagination so all pages are fetched)
+- **Interrupt-safe**: every page is saved to disk as it arrives, and Ctrl-C or an API error still exports what was fetched, so results that cost search quota aren't lost
 - **Rate limiting** and 429 retry with backoff to stay within Flare limits
 - **Verbose logging** (`-v` / `-vv`) of API requests to stderr for debugging
 - **Optional tenant** scope via `--tenant` for token generation
@@ -156,6 +157,17 @@ uv run flare-lookup token
   The secret is the credential's `hash` field (cleartext for stealer-log/combolist sources; otherwise the stored hash — downstream tools split on the first colon). Records with no username or no secret are skipped, as are domain-variant lines when neither the identity nor the record carries a domain. This is the format expected by credential-exposure checkers and password-reset tooling; use it only against identities you are authorized to remediate.
 
 Exports are saved to `results/` by default (e.g. `-d example.com` → `results/example.com_credentials.json`, `-o creds.csv` → `results/creds.csv`), which is gitignored. `.gitignore` also excludes `*.csv`, `*.json`, `*_creds.jsonl`, and the `*_userpass.txt` / `*_userpass_domain.txt` combolists anywhere in the repo.
+
+## Interrupted searches
+
+Searches can pull thousands of pages, and every result counts against your quota, so nothing is held only in memory:
+
+- **Checkpoint file.** As each page arrives it is appended to `<name>.partial-<UTC timestamp>.jsonl` next to the export (e.g. `results/example.com_credentials.partial-20261013T153000Z.jsonl`) and flushed before the next request.
+- **Ctrl-C or API/network error** (including a 429 that exhausts its retries): the search stops, the results fetched so far are exported in the requested `--format` exactly as a finished run would be, and the command exits non-zero (130 for Ctrl-C, 1 for an error). The export has the same file name as a complete one, so check the "interrupted" / "failed" line in the output (or the exit code) before treating it as complete. The page that was in flight when you pressed Ctrl-C is not included.
+- **Success:** the checkpoint is deleted once the export has been written. A `.partial-*.jsonl` file that is still there means the run didn't finish cleanly (killed process, closed terminal, crash, full disk); it holds the raw records from every page fetched, one JSON object per line. A new search never overwrites it.
+- `--print` writes no files; on Ctrl-C it still prints the first 20 results fetched so far.
+
+Checkpoints hold raw results (including credential secrets), so keep them out of version control; `.gitignore` already excludes `*.partial-*.jsonl` and `results/`.
 
 ## Rate limits and pagination
 

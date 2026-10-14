@@ -16,9 +16,10 @@ import os
 import re
 import sys
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 import typer
 import requests
@@ -520,6 +521,67 @@ def export_results(
     return [path for _, path in targets]
 
 
+# ---------- Incremental saving ----------
+
+def spool_path_for(output: Path) -> Path:
+    """Checkpoint file for a search: ``<base>.partial-<UTC timestamp>.jsonl`` beside the export.
+
+    The timestamp keeps a checkpoint left behind by a killed run from being overwritten
+    by the next search of the same value.
+    """
+    base = _strip_known_suffix(output)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return base.with_name(f"{base.name}.partial-{stamp}.jsonl")
+
+
+def collect_pages(
+    pages: Iterable[tuple[int, list[dict], str | None]],
+    label: str,
+    spool_path: Path | None,
+) -> tuple[list[dict], int]:
+    """Drain ``pages`` into a list, appending each page to ``spool_path`` as it arrives.
+
+    Each page is flushed to the JSONL spool before the next request, so results that
+    already cost search quota survive a Ctrl-C, an API/network error, or a killed
+    process. Ctrl-C and request errors end the search early instead of propagating, so
+    the caller can still export what was fetched. Returns ``(items, exit_code)``:
+    0 if the search ran to completion, 130 if interrupted, 1 if a request failed.
+    """
+    collected: list[dict] = []
+    stopped: BaseException | None = None
+    last_page = 0
+    spool_cm = open(spool_path, "w", encoding="utf-8") if spool_path else nullcontext()
+    with spool_cm as spool, Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TextColumn("• page {task.fields[page]} • {task.fields[items]} items"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task(f"Searching {label}…", total=None, page=0, items=0)
+        try:
+            for page_idx, items, _ in pages:
+                collected.extend(items)
+                if spool:
+                    spool.writelines(json.dumps(item, default=str) + "\n" for item in items)
+                    spool.flush()
+                last_page = page_idx
+                progress.update(task_id=task, page=page_idx, items=len(collected))
+        except (KeyboardInterrupt, requests.RequestException) as exc:
+            stopped = exc
+        progress.update(task_id=task, description=f"Found {len(collected)} {label}")
+    if stopped is None:
+        return collected, 0
+    interrupted = isinstance(stopped, KeyboardInterrupt)
+    why = "interrupted" if interrupted else f"failed ({stopped})"
+    console.print(
+        f"[yellow]Search {why} after {last_page} page{'s' if last_page != 1 else ''}; "
+        f"saving the {len(collected)} {label} fetched so far.[/yellow]"
+    )
+    return collected, 130 if interrupted else 1
+
+
 # ---------- Date filters ----------
 
 def years_ago(years: int, now: datetime | None = None) -> str:
@@ -603,17 +665,13 @@ def search_events(
 
     vlog(1, f"events search query={query} filters types={types_list} severity={severity_val}")
     session = make_session(api_key, tenant)
-    collected: list[dict] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TextColumn("• page {task.fields[page]} • {task.fields[items]} items"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        task = progress.add_task("Searching events…", total=None, page=0, items=0)
-        for page_idx, items, next_cursor in iter_events(
+    spool_path = None
+    if not print_only:
+        output = resolve_output(output or default_output_name(query, "events", fmt), output_dir)
+        spool_path = spool_path_for(output)
+        console.print(f"[dim]Saving pages to {spool_path} as they arrive[/dim]")
+    collected, exit_code = collect_pages(
+        iter_events(
             session,
             query,
             size=size,
@@ -623,13 +681,10 @@ def search_events(
             estimated_created_at_gte=created_after,
             estimated_created_at_lte=created_before,
             max_pages=max_pages,
-        ):
-            collected.extend(items)
-            progress.update(task_id=task, page=page_idx, items=len(collected))
-        progress.update(
-            task_id=task,
-            description=f"Found {len(collected)} events",
-        )
+        ),
+        "events",
+        spool_path,
+    )
     console.print(f"[green]Total events: {len(collected)}[/green]")
     if print_only:
         for item in collected[:20]:
@@ -637,9 +692,11 @@ def search_events(
         if len(collected) > 20:
             console.print(f"... and {len(collected) - 20} more (drop --print to export all)")
     else:
-        output = resolve_output(output or default_output_name(query, "events", fmt), output_dir)
         for path in export_results(output, fmt, collected, write_events_csv):
             console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
+        spool_path.unlink(missing_ok=True)  # only once the export succeeded
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 @app.command()
@@ -691,17 +748,13 @@ def search_credentials(
     imported_after = resolve_since(imported_after, years, "--imported-after")
     vlog(1, f"credentials search query={query} imported_at gte={imported_after} lte={imported_before}")
     session = make_session(api_key, tenant)
-    collected: list[dict] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TextColumn("• page {task.fields[page]} • {task.fields[items]} items"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        task = progress.add_task("Searching credentials…", total=None, page=0, items=0)
-        for page_idx, items, next_cursor in iter_credentials(
+    spool_path = None
+    if not print_only:
+        output = resolve_output(output or default_output_name(query, "credentials", fmt), output_dir)
+        spool_path = spool_path_for(output)
+        console.print(f"[dim]Saving pages to {spool_path} as they arrive[/dim]")
+    collected, exit_code = collect_pages(
+        iter_credentials(
             session,
             query,
             size=size,
@@ -709,13 +762,10 @@ def search_credentials(
             imported_at_gte=imported_after,
             imported_at_lte=imported_before,
             max_pages=max_pages,
-        ):
-            collected.extend(items)
-            progress.update(task_id=task, page=page_idx, items=len(collected))
-        progress.update(
-            task_id=task,
-            description=f"Found {len(collected)} credentials",
-        )
+        ),
+        "credentials",
+        spool_path,
+    )
     console.print(f"[green]Total credentials: {len(collected)}[/green]")
     if print_only:
         for item in collected[:20]:
@@ -723,9 +773,11 @@ def search_credentials(
         if len(collected) > 20:
             console.print(f"... and {len(collected) - 20} more (drop --print to export all)")
     else:
-        output = resolve_output(output or default_output_name(query, "credentials", fmt), output_dir)
         for path in export_results(output, fmt, collected, write_credentials_csv, userpass=True):
             console.print(f"[green]Wrote [bold]{path}[/bold][/green]")
+        spool_path.unlink(missing_ok=True)  # only once the export succeeded
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 @app.command()

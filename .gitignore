@@ -35,6 +35,9 @@ results/
 *_creds.json
 *_creds.jsonl
 
+# in-progress search checkpoints (raw results — never commit)
+*.partial-*.jsonl
+
 # user:pass combolists (contain secrets — never commit)
 *_userpass.txt
 *_userpass_domain.txt
