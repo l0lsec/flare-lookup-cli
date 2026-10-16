@@ -61,7 +61,7 @@ Create an API key under [Flare Profile → API Keys](https://app.flare.io/#/prof
 Query the global credentials search and export results. Default page size is 10,000; pagination is automatic until there are no more results.
 
 ```bash
-# By domain (default query type); saved as results/example.com_credentials.json
+# By domain (query type inferred from the flag); saved as results/example.com_credentials.json
 uv run flare-lookup search-credentials --domain example.com
 
 # Export every format in one run: JSON, JSONL, CSV, and the two user:pass

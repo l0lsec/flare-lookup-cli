@@ -81,6 +81,22 @@ def make_session(api_key: str, tenant: str | None = None) -> requests.Session:
     return s
 
 
+def infer_query_type(query_type: str | None, **values: str | None) -> str:
+    """Pick the query type from the one value flag given when --query-type is omitted."""
+    if query_type:
+        return query_type
+    given = [name for name, value in values.items() if value]
+    if len(given) == 1:
+        return given[0]
+    flags = ", ".join("--" + name.replace("_", "-") for name in values)
+    if not given:
+        raise typer.BadParameter(f"Provide a value to search for: {flags}.")
+    raise typer.BadParameter(
+        f"Multiple values given ({', '.join('--' + g.replace('_', '-') for g in given)}); "
+        "pick one with --query-type."
+    )
+
+
 # ---------- Events global search ----------
 # POST /firework/v4/events/global/_search
 # Body: query (domain|email|keyword|query_string|username|...), size (max 10), from, order, filters
@@ -610,11 +626,11 @@ def resolve_since(after: str | None, years: int | None, after_flag: str) -> str 
 
 @app.command()
 def search_events(
-    query_type: str = typer.Option(
-        "keyword",
+    query_type: str | None = typer.Option(
+        None,
         "--query-type",
         "-q",
-        help="Query type: keyword, domain, email, query_string, username",
+        help="Query type: keyword, domain, email, query_string, username (default: inferred from the value flag given)",
     ),
     keyword: str | None = typer.Option(None, "--keyword", "-k", help="Keyword (for query_type=keyword)"),
     domain: str | None = typer.Option(None, "--domain", "-d", help="Domain / FQDN (for query_type=domain)"),
@@ -649,7 +665,9 @@ def search_events(
         console.print("[red]FLARE_API_KEY not set and --api-key not provided.[/red]")
         raise typer.Exit(1)
     query = build_events_query(
-        query_type=query_type,
+        query_type=infer_query_type(
+            query_type, keyword=keyword, domain=domain, email=email, query_string=query_string, username=username
+        ),
         keyword=keyword,
         domain=domain,
         email=email,
@@ -701,11 +719,11 @@ def search_events(
 
 @app.command()
 def search_credentials(
-    query_type: str = typer.Option(
-        "domain",
+    query_type: str | None = typer.Option(
+        None,
         "--query-type",
         "-q",
-        help="Query type: domain, email, keyword, secret, auth_domain",
+        help="Query type: domain, email, keyword, secret, auth_domain (default: inferred from the value flag given)",
     ),
     domain: str | None = typer.Option(None, "--domain", "-d", help="Domain / FQDN (for domain or auth_domain)"),
     email: str | None = typer.Option(None, "--email", "-e", help="Email (for query_type=email)"),
@@ -738,7 +756,9 @@ def search_credentials(
         console.print("[red]FLARE_API_KEY not set and --api-key not provided.[/red]")
         raise typer.Exit(1)
     query = build_credentials_query(
-        query_type=query_type,
+        query_type=infer_query_type(
+            query_type, domain=domain, email=email, keyword=keyword, secret=secret, auth_domain=auth_domain
+        ),
         domain=domain,
         email=email,
         keyword=keyword,
